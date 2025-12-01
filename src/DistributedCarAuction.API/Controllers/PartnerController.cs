@@ -3,6 +3,7 @@ namespace DistributedCarAuction.API.Controllers;
 using DistributedCarAuction.Application.DTOs;
 using DistributedCarAuction.Application.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 /// <summary>
 /// Partner API - Allows external auction platforms to place bids.
@@ -10,6 +11,7 @@ using Microsoft.AspNetCore.Mvc;
 /// </summary>
 [ApiController]
 [Route("api/partners")]
+[EnableRateLimiting("partner")]
 public class PartnerController : ControllerBase
 {
     private readonly ILotService _lotService;

@@ -4,9 +4,11 @@ using DistributedCarAuction.Application.DTOs;
 using DistributedCarAuction.Application.Interfaces;
 using DistributedCarAuction.Domain.Entities;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 [ApiController]
 [Route("api/vehicles")]
+[EnableRateLimiting("fixed")]
 public class VehiclesController : ControllerBase
 {
     private readonly IVehicleService _vehicleService;

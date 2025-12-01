@@ -4,9 +4,11 @@ using DistributedCarAuction.Application.DTOs;
 using DistributedCarAuction.Application.Interfaces;
 using DistributedCarAuction.Domain.Entities;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 [ApiController]
 [Route("api/lots")]
+[EnableRateLimiting("fixed")]
 public class LotsController : ControllerBase
 {
     private readonly ILotService _lotService;
@@ -50,6 +52,7 @@ public class LotsController : ControllerBase
     }
 
     [HttpPost("bids")]
+    [EnableRateLimiting("bids")]
     public async Task<IActionResult> PlaceBid([FromBody] BidRequest request)
     {
         BidResult result = await _lotService.PlaceBidAsync(request);
