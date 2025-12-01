@@ -13,9 +13,9 @@ public class InMemoryVehicleRepository : IVehicleRepository
 
     public Task<Vehicle> AddAsync(Vehicle vehicle)
     {
-		ArgumentNullException.ThrowIfNull(vehicle);
+        ArgumentNullException.ThrowIfNull(vehicle);
 
-		if (!_vehicles.TryAdd(vehicle.Id, vehicle))
+        if (!_vehicles.TryAdd(vehicle.Id, vehicle))
             throw new InvalidOperationException($"Vehicle with ID {vehicle.Id} already exists");
             
         return Task.FromResult(vehicle);
@@ -25,5 +25,10 @@ public class InMemoryVehicleRepository : IVehicleRepository
     {
         _vehicles.TryGetValue(id, out var vehicle);
         return Task.FromResult(vehicle);
+    }
+
+    public Task<List<Vehicle>> GetAllAsync()
+    {
+        return Task.FromResult(_vehicles.Values.ToList());
     }
 }
