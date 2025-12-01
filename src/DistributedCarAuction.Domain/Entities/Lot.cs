@@ -4,13 +4,13 @@ using DistributedCarAuction.Domain.Common;
 
 public class Lot : BaseEntity
 {
-    public Guid AuctionId { get; set; }
+    public Guid AuctionId { get; init; }
 
-    public Vehicle Vehicle { get; set; }
+    public Vehicle Vehicle { get; init; }
 
-    public decimal StartingBid { get; set; }
+    public decimal StartingBid { get; init; }
 
-    public decimal? ReservePrice { get; set; }
+    public decimal? ReservePrice { get; init; }
 
     private readonly List<Bid> _bids = new();
 

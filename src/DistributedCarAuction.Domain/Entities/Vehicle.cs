@@ -5,19 +5,19 @@ using DistributedCarAuction.Domain.Enums;
 
 public abstract class Vehicle : BaseEntity
 {
-    public string Make { get; set; }
+    public string Make { get; init; }
 
-    public string Model { get; set; }
+    public string Model { get; init; }
 
-    public int Year { get; set; }
+    public int Year { get; init; }
 
-    public string VIN { get; set; }
+    public string VIN { get; init; }
 
-    public decimal Mileage { get; set; }
+    public decimal Mileage { get; init; }
 
-    public string Color { get; set; }
+    public string Color { get; init; }
 
-    public VehicleType VehicleType { get; set; }
+    public VehicleType VehicleType { get; init; }
 
     protected Vehicle() 
     { 

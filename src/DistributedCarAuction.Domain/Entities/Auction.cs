@@ -5,15 +5,15 @@ using DistributedCarAuction.Domain.Enums;
 
 public class Auction : BaseEntity
 {
-    public string Title { get; set; }
+    public string Title { get; init; }
 
-    public string Description { get; set; }
+    public string Description { get; init; }
 
-    public AuctionState State { get; set; }
+    public AuctionState State { get; private set; }
 
-    public DateTime? StartTime { get; set; }
+    public DateTime? StartTime { get; private set; }
 
-    public DateTime? EndTime { get; set; }
+    public DateTime? EndTime { get; private set; }
 
     private readonly List<Lot> _lots = new();
 

@@ -4,15 +4,15 @@ using DistributedCarAuction.Domain.Common;
 
 public class Bid : BaseEntity
 {
-    public Guid BidderId { get; set; }
+    public Guid BidderId { get; init; }
 
-    public Guid LotId { get; set; }
+    public Guid LotId { get; init; }
 
-    public decimal Amount { get; set; }
+    public decimal Amount { get; init; }
 
-    public DateTime BidTime { get; set; }
+    public DateTime BidTime { get; init; }
 
-    public long Sequence { get; set; } // For bid ordering in distributed system
+    public long Sequence { get; init; } // For bid ordering in distributed system
 
     private Bid() { }
 

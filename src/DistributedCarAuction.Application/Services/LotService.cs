@@ -65,8 +65,8 @@ public class LotService : ILotService
             lot.PlaceBid(request.BidderId, request.Amount);
             await _lotRepository.UpdateAsync(lot);
 
-            // Get the placed bid
-            var placedBid = lot.Bids.LastOrDefault();
+			// Get the placed bid
+			Bid? placedBid = lot.Bids.LastOrDefault();
             
             // Notify about the bid
             await _notificationService.NotifyBidPlaced(request.LotId, request.BidderId, request.Amount);

@@ -4,11 +4,11 @@ using DistributedCarAuction.Domain.Enums;
 
 public class Truck : Vehicle
 {
-    public decimal LoadCapacityKg { get; set; }
+    public decimal LoadCapacityKg { get; init; }
 
-    public int BedLengthCm { get; set; }
+    public int BedLengthCm { get; init; }
 
-    public bool HasFourWheelDrive { get; set; }
+    public bool HasFourWheelDrive { get; init; }
 
     private Truck() { }
 

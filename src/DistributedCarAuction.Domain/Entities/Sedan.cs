@@ -4,9 +4,9 @@ using DistributedCarAuction.Domain.Enums;
 
 public class Sedan : Vehicle
 {
-    public int NumberOfDoors { get; set; }
+    public int NumberOfDoors { get; init; }
 
-    public bool HasSunroof { get; set; }
+    public bool HasSunroof { get; init; }
 
     private Sedan() { }
 
