@@ -42,7 +42,7 @@ public class Auction : BaseEntity
 
 		ArgumentNullException.ThrowIfNull(lot);
 
-		_lots.Add(lot);
+        _lots.Add(lot);
         SetUpdatedAt();
     }
 

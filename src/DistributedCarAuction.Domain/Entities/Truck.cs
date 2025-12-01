@@ -10,7 +10,7 @@ public class Truck : Vehicle
 
     public bool HasFourWheelDrive { get; set; }
 
-    public Truck() { }
+    private Truck() { }
 
     public Truck(string make, string model, int year, string vin, decimal mileage, string color, decimal loadCapacityKg, int bedLengthCm, bool hasFourWheelDrive)
         : base(make, model, year, vin, mileage, color, VehicleType.Truck)
