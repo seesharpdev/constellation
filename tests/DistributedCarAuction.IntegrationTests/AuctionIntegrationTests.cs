@@ -24,10 +24,12 @@ public class AuctionIntegrationTests : IClassFixture<WebApplicationFactory<Progr
 
     // Test constants
     private const string TestPartnerId = "ExternalAuctionPartner1";
+    private const string TestApiKey = "dev-test-key-12345";
 
     public AuctionIntegrationTests(WebApplicationFactory<Program> factory)
     {
         _client = factory.CreateClient();
+        _client.DefaultRequestHeaders.Add("X-Api-Key", TestApiKey);
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true

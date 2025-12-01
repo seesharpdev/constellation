@@ -1,5 +1,6 @@
 namespace DistributedCarAuction.API.Controllers;
 
+using DistributedCarAuction.API.Authorization;
 using DistributedCarAuction.Application.DTOs;
 using DistributedCarAuction.Application.Interfaces;
 using DistributedCarAuction.Domain.Entities;
@@ -9,6 +10,7 @@ using Microsoft.AspNetCore.RateLimiting;
 [ApiController]
 [Route("api/lots")]
 [EnableRateLimiting("fixed")]
+[ApiKeyRequired]
 public class LotsController : ControllerBase
 {
     private readonly ILotService _lotService;

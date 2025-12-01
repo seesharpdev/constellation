@@ -1,5 +1,6 @@
 namespace DistributedCarAuction.API.Controllers;
 
+using DistributedCarAuction.API.Authorization;
 using DistributedCarAuction.Application.DTOs;
 using DistributedCarAuction.Application.Interfaces;
 using Microsoft.AspNetCore.Mvc;
@@ -8,10 +9,12 @@ using Microsoft.AspNetCore.RateLimiting;
 /// <summary>
 /// Partner API - Allows external auction platforms to place bids.
 /// Partners receive auction events by consuming from Kafka topic "auction-events".
+/// This endpoint is public - partners authenticate via their Partner ID.
 /// </summary>
 [ApiController]
 [Route("api/partners")]
 [EnableRateLimiting("partner")]
+[AllowAnonymous]
 public class PartnerController : ControllerBase
 {
     private readonly ILotService _lotService;
