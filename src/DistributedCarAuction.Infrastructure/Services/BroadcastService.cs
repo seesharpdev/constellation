@@ -1,18 +1,26 @@
 namespace DistributedCarAuction.Infrastructure.Services;
 
+using DistributedCarAuction.Application.DTOs.Events;
 using DistributedCarAuction.Application.Interfaces;
 using DistributedCarAuction.Domain.Entities;
+using DistributedCarAuction.Domain.Enums;
 using Microsoft.Extensions.Logging;
-using System.Collections.Concurrent;
+using System.Text.Json;
 
 /// <summary>
-/// Simulates broadcasting auction events to external partner platforms.
-/// Production: Replace with HTTP webhooks or message queue (Kafka/RabbitMQ) implementation.
+/// Kafka-based broadcast service for publishing auction events.
+/// Events are partitioned by AuctionId for ordering guarantees.
+/// 
+/// Production: Inject IProducer&lt;string, string&gt; from Confluent.Kafka.
+/// This implementation simulates Kafka behavior with logging.
+/// 
+/// Partners consume directly from Kafka topic "auction-events".
+/// Legacy webhook delivery handled by separate Webhook Adapter Service.
 /// </summary>
 public class BroadcastService : IBroadcastService
 {
     private readonly ILogger<BroadcastService> _logger;
-    private readonly ConcurrentDictionary<string, string> _partners = new();
+    private const string TopicName = "auction-events";
 
     public BroadcastService(ILogger<BroadcastService> logger)
     {
@@ -21,48 +29,76 @@ public class BroadcastService : IBroadcastService
 
     public Task BroadcastAuctionAsync(Auction auction)
     {
-        _logger.LogInformation(
-            "Broadcasting auction to {PartnerCount} partner(s) - AuctionId: {AuctionId}, State: {State}",
-            _partners.Count, auction.Id, auction.State);
-
-        foreach (var partner in _partners)
+        string eventType = auction.State switch
         {
-            _logger.LogDebug("Sending to partner {PartnerId}", partner.Key);
-            // Production: POST to partner.Value or publish to message queue
-        }
+            AuctionState.Created => "AuctionCreated",
+            AuctionState.Active => "AuctionStarted",
+            AuctionState.Ended => "AuctionEnded",
+            _ => "AuctionStateChanged"
+        };
 
-        return Task.CompletedTask;
+        AuctionEvent evt = new()
+        {
+            EventType = eventType,
+            AuctionId = auction.Id,
+            Payload = new AuctionStatePayload(
+                auction.Title,
+                auction.Description,
+                auction.State.ToString(),
+                auction.Lots.Count
+            )
+        };
+
+        return PublishToKafkaAsync(evt);
     }
 
     public Task BroadcastBidAsync(Guid auctionId, Guid lotId, decimal amount)
     {
-        _logger.LogInformation(
-            "Broadcasting bid to {PartnerCount} partner(s) - LotId: {LotId}, Amount: {Amount:C}",
-            _partners.Count, lotId, amount);
-
-        foreach (var partner in _partners)
+        AuctionEvent evt = new()
         {
-            _logger.LogDebug("Sending to partner {PartnerId}", partner.Key);
-            // Production: POST to partner.Value or publish to message queue
-        }
+            EventType = "BidPlaced",
+            AuctionId = auctionId,
+            Payload = new BidPlacedPayload(
+                LotId: lotId,
+                BidderId: Guid.Empty,  // Would be passed in production
+                Amount: amount,
+                Sequence: 0,           // Would be passed in production
+                IsCurrentlyHighest: true,
+                CurrentHighestBid: amount
+            )
+        };
 
-        return Task.CompletedTask;
+        return PublishToKafkaAsync(evt);
     }
 
-    public Task RegisterPartnerAsync(string partnerId, string callbackUrl)
+    /// <summary>
+    /// Publishes event to Kafka topic.
+    /// Production: Use Confluent.Kafka IProducer with proper error handling.
+    /// </summary>
+    private Task PublishToKafkaAsync(AuctionEvent evt)
     {
-        if (string.IsNullOrWhiteSpace(partnerId))
-            throw new ArgumentException("Partner ID cannot be empty", nameof(partnerId));
+        string partitionKey = evt.AuctionId.ToString();
+        string messageValue = JsonSerializer.Serialize(evt, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
 
-        if (string.IsNullOrWhiteSpace(callbackUrl))
-            throw new ArgumentException("Callback URL cannot be empty", nameof(callbackUrl));
+        // Simulated Kafka publish - in production use:
+        // await _producer.ProduceAsync(TopicName, new Message<string, string>
+        // {
+        //     Key = partitionKey,
+        //     Value = messageValue
+        // });
 
-        _partners.AddOrUpdate(partnerId, callbackUrl, (_, _) => callbackUrl);
+        _logger.LogInformation(
+            "KAFKA [{Topic}] Key={PartitionKey} | {EventType} | EventId={EventId}",
+            TopicName,
+            partitionKey,
+            evt.EventType,
+            evt.EventId);
 
-        _logger.LogInformation("Partner registered - {PartnerId}: {CallbackUrl}", partnerId, callbackUrl);
+        _logger.LogDebug("KAFKA Message: {Message}", messageValue);
 
         return Task.CompletedTask;
     }
-
-    public int GetRegisteredPartnerCount() => _partners.Count;
 }

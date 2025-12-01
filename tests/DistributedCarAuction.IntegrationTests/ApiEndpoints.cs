@@ -34,7 +34,6 @@ public static class ApiEndpoints
 
     public static class Partners
     {
-        public const string Register = "/api/partners/register";
         public const string Bids = "/api/partners/bids";
     }
 }

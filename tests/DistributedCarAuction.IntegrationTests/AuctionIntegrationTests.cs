@@ -24,7 +24,6 @@ public class AuctionIntegrationTests : IClassFixture<WebApplicationFactory<Progr
 
     // Test constants
     private const string TestPartnerId = "ExternalAuctionPartner1";
-    private const string TestPartnerCallbackUrl = "https://partner.example.com/callback";
 
     public AuctionIntegrationTests(WebApplicationFactory<Program> factory)
     {
@@ -86,13 +85,6 @@ public class AuctionIntegrationTests : IClassFixture<WebApplicationFactory<Progr
     private async Task CloseAuctionAsync(Guid auctionId)
     {
         HttpResponseMessage response = await _client.PostAsync(ApiEndpoints.Auctions.Close(auctionId), null);
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-    }
-
-    private async Task RegisterPartnerAsync(string partnerId, string callbackUrl)
-    {
-        object request = new { PartnerId = partnerId, CallbackUrl = callbackUrl };
-        HttpResponseMessage response = await _client.PostAsJsonAsync(ApiEndpoints.Partners.Register, request);
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
@@ -204,9 +196,6 @@ public class AuctionIntegrationTests : IClassFixture<WebApplicationFactory<Progr
         Guid lot1Id = await CreateLotAsync(auctionId, bmwId, 15000m, 18000m);
         Guid lot2Id = await CreateLotAsync(auctionId, raptorId, 20000m, 25000m);
         Guid lot3Id = await CreateLotAsync(auctionId, miniId, 25000m);
-
-        // Register Partner
-        await RegisterPartnerAsync(TestPartnerId, TestPartnerCallbackUrl);
 
         // Start Auction
         await StartAuctionAsync(auctionId);

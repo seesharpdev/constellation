@@ -5,48 +5,22 @@ using DistributedCarAuction.Application.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 
 /// <summary>
-/// Partner API - Allows external auction platforms to integrate with this system
+/// Partner API - Allows external auction platforms to place bids.
+/// Partners receive auction events by consuming from Kafka topic "auction-events".
 /// </summary>
 [ApiController]
 [Route("api/partners")]
 public class PartnerController : ControllerBase
 {
     private readonly ILotService _lotService;
-    private readonly IBroadcastService _broadcastService;
     private readonly ILogger<PartnerController> _logger;
 
     public PartnerController(
         ILotService lotService,
-        IBroadcastService broadcastService,
         ILogger<PartnerController> logger)
     {
         _lotService = lotService ?? throw new ArgumentNullException(nameof(lotService));
-        _broadcastService = broadcastService ?? throw new ArgumentNullException(nameof(broadcastService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-    }
-
-    /// <summary>
-    /// Register as a partner to receive auction broadcasts
-    /// </summary>
-    [HttpPost("register")]
-    public async Task<IActionResult> RegisterPartner([FromBody] RegisterPartnerRequest request)
-    {
-        try
-        {
-            await _broadcastService.RegisterPartnerAsync(request.PartnerId, request.CallbackUrl);
-
-            return Ok(new { message = "Partner registered successfully", partnerId = request.PartnerId });
-        }
-        catch (ArgumentException ex)
-        {
-            return BadRequest(new { error = ex.Message });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error registering partner");
-
-            return StatusCode(500, new { error = "An error occurred while registering the partner" });
-        }
     }
 
     /// <summary>
