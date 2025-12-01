@@ -230,10 +230,14 @@ public class AuctionIntegrationTests : IClassFixture<WebApplicationFactory<Progr
         bid3Result.Success.Should().BeTrue();
         bid3Result.CurrentHighestBid.Should().Be(19000m);
 
-        // Test invalid bid (too low - must be higher than current highest)
-        BidRequest invalidBid = new(lot1Id, bidder1, 18000m);
-        HttpResponseMessage invalidBidResponse = await _client.PostAsJsonAsync(ApiEndpoints.Lots.Bids, invalidBid);
-        invalidBidResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        // Test low bid - HIGH AVAILABILITY: accepted but not currently highest
+        BidRequest lowBid = new(lot1Id, bidder1, 18000m);
+        HttpResponseMessage lowBidResponse = await _client.PostAsJsonAsync(ApiEndpoints.Lots.Bids, lowBid);
+        lowBidResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        BidResult? lowBidResult = await lowBidResponse.Content.ReadFromJsonAsync<BidResult>(_jsonOptions);
+        lowBidResult.Should().NotBeNull();
+        lowBidResult!.Success.Should().BeTrue();  // Bid accepted (availability)
+        lowBidResult.IsCurrentlyHighest.Should().BeFalse();  // But not the highest (consistency feedback)
 
         // Lot 2 - Ford Ranger Raptor (single bid below reserve)
         await PlaceBidAsync(lot2Id, bidder1, 23000m);
@@ -314,30 +318,50 @@ public class AuctionIntegrationTests : IClassFixture<WebApplicationFactory<Progr
     }
 
     [Fact]
-    public async Task BidValidation_ShouldRejectInvalidBids()
+    public async Task BidValidation_HighAvailability_ShouldAcceptAllBidsWithValidityFeedback()
     {
         // Setup: Create vehicle, auction, lot
         Guid vehicleId = await CreateVehicleAsync(CreateBmw330eRequest());
-        Guid auctionId = await CreateAuctionAsync("Bid Test Auction", "Testing bid validation");
+        Guid auctionId = await CreateAuctionAsync("Bid Test Auction", "Testing high-availability bidding");
         Guid lotId = await CreateLotAsync(auctionId, vehicleId, 5000m);
 
         // Start auction
         await StartAuctionAsync(auctionId);
 
-        Guid bidderId = Guid.NewGuid();
+        Guid bidderId1 = Guid.NewGuid();
+        Guid bidderId2 = Guid.NewGuid();
 
-        // Valid bid
-        BidResult validResult = await PlaceBidAsync(lotId, bidderId, 6000m);
-        validResult.Success.Should().BeTrue();
+        // First bid - valid and highest
+        BidResult firstBid = await PlaceBidAsync(lotId, bidderId1, 6000m);
+        firstBid.Success.Should().BeTrue();
+        firstBid.IsCurrentlyHighest.Should().BeTrue();
 
-        // Invalid: Bid amount equal to current highest (must be greater)
-        BidRequest equalBid = new(lotId, Guid.NewGuid(), 6000m);
+        // Second bid - equal amount (accepted but not highest)
+        BidRequest equalBid = new(lotId, bidderId2, 6000m);
         HttpResponseMessage equalResponse = await _client.PostAsJsonAsync(ApiEndpoints.Lots.Bids, equalBid);
-        equalResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        equalResponse.StatusCode.Should().Be(HttpStatusCode.OK);  // Accepted for availability
+        BidResult? equalResult = await equalResponse.Content.ReadFromJsonAsync<BidResult>(_jsonOptions);
+        equalResult.Should().NotBeNull();
+        equalResult!.Success.Should().BeTrue();  // Bid was accepted
+        equalResult.IsCurrentlyHighest.Should().BeFalse();  // But not the highest
 
-        // Invalid: Bid amount less than current highest
+        // Third bid - lower amount (accepted but not highest)
         BidRequest lowBid = new(lotId, Guid.NewGuid(), 5500m);
         HttpResponseMessage lowResponse = await _client.PostAsJsonAsync(ApiEndpoints.Lots.Bids, lowBid);
-        lowResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        lowResponse.StatusCode.Should().Be(HttpStatusCode.OK);  // Accepted for availability
+        BidResult? lowResult = await lowResponse.Content.ReadFromJsonAsync<BidResult>(_jsonOptions);
+        lowResult.Should().NotBeNull();
+        lowResult!.Success.Should().BeTrue();  // Bid was accepted
+        lowResult.IsCurrentlyHighest.Should().BeFalse();  // But not the highest
+
+        // Verify highest bid is still the first valid one
+        decimal highestBid = await GetHighestBidAsync(lotId);
+        highestBid.Should().Be(6000m);
+
+        // Fourth bid - higher amount (accepted and is highest)
+        BidResult higherBid = await PlaceBidAsync(lotId, bidderId2, 7000m);
+        higherBid.Success.Should().BeTrue();
+        higherBid.IsCurrentlyHighest.Should().BeTrue();
+        higherBid.CurrentHighestBid.Should().Be(7000m);
     }
 }

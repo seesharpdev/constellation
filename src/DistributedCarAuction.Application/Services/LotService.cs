@@ -49,37 +49,46 @@ public class LotService : ILotService
     {
         try
         {
-			Lot? lot = await _lotRepository.GetByIdAsync(request.LotId);
+            Lot? lot = await _lotRepository.GetByIdAsync(request.LotId);
             if (lot == null)
                 return new BidResult(false, $"Lot with ID {request.LotId} not found");
 
-			// Verify auction is active
-			Auction? auction = await _auctionRepository.GetByIdAsync(lot.AuctionId);
+            // Verify auction is active
+            Auction? auction = await _auctionRepository.GetByIdAsync(lot.AuctionId);
             if (auction == null)
                 return new BidResult(false, "Associated auction not found");
 
             if (!auction.CanAcceptBids())
                 return new BidResult(false, $"Auction is not active (current state: {auction.State})");
 
-            // Place bid (domain logic will validate amount)
+            // HIGH-AVAILABILITY: Check if bid would be valid (for user feedback)
+            bool isCurrentlyValid = lot.WouldBidBeValid(request.Amount);
+
+            // Accept bid regardless of validity (availability over consistency)
             lot.PlaceBid(request.BidderId, request.Amount);
             await _lotRepository.UpdateAsync(lot);
 
-			// Get the placed bid
-			Bid? placedBid = lot.Bids.LastOrDefault();
+            // Get the placed bid
+            Bid? placedBid = lot.Bids.LastOrDefault();
             
-            // Notify about the bid
+            // Notify about the bid (all bids are broadcast for transparency)
             await _notificationService.NotifyBidPlaced(request.LotId, request.BidderId, request.Amount);
             await _broadcastService.BroadcastBidAsync(auction.Id, request.LotId, request.Amount);
 
+            // Return result with validity feedback
+            string message = isCurrentlyValid 
+                ? "Bid placed successfully - currently the highest bid"
+                : "Bid accepted but not currently the highest bid";
+
             return new BidResult(
-                true,
-                "Bid placed successfully",
+                true,  // Bid was accepted (availability)
+                message,
                 placedBid?.Id,
-                lot.GetHighestBidAmount()
+                lot.GetHighestBidAmount(),
+                isCurrentlyValid  // Feedback on current validity
             );
         }
-        catch (InvalidOperationException ex)
+        catch (ArgumentException ex)
         {
             return new BidResult(false, ex.Message);
         }
