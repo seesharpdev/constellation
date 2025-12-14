@@ -16,8 +16,22 @@ public class Auction : BaseEntity
     public DateTime? EndTime { get; private set; }
 
     private readonly List<Lot> _lots = new();
+    private readonly object _lotsLock = new();
+    private readonly object _stateLock = new();
 
-    public IReadOnlyList<Lot> Lots => _lots.AsReadOnly();
+    /// <summary>
+    /// Returns a snapshot of the current lots (thread-safe).
+    /// </summary>
+    public IReadOnlyList<Lot> Lots
+    {
+        get
+        {
+            lock (_lotsLock)
+            {
+                return _lots.ToList().AsReadOnly();
+            }
+        }
+    }
 
     private Auction() 
     { 
@@ -35,48 +49,92 @@ public class Auction : BaseEntity
         State = AuctionState.Created;
     }
 
+    /// <summary>
+    /// Adds a lot to this auction.
+    /// Thread-safe: Uses locks to protect state check and collection modification.
+    /// </summary>
     public void AddLot(Lot lot)
     {
-        if (State != AuctionState.Created)
-            throw new InvalidOperationException("Lots can only be added to auctions in Created state");
+        ArgumentNullException.ThrowIfNull(lot);
 
-		ArgumentNullException.ThrowIfNull(lot);
+        lock (_stateLock)
+        {
+            if (State != AuctionState.Created)
+                throw new InvalidOperationException("Lots can only be added to auctions in Created state");
 
-        _lots.Add(lot);
-        SetUpdatedAt();
+            lock (_lotsLock)
+            {
+                _lots.Add(lot);
+            }
+            
+            SetUpdatedAt();
+        }
     }
 
+    /// <summary>
+    /// Starts the auction, enabling bid acceptance.
+    /// Thread-safe: Uses lock to ensure atomic state transition.
+    /// </summary>
     public void Start()
     {
-        if (State != AuctionState.Created)
-            throw new InvalidOperationException($"Cannot start auction from {State} state");
+        lock (_stateLock)
+        {
+            if (State != AuctionState.Created)
+                throw new InvalidOperationException($"Cannot start auction from {State} state");
 
-        if (_lots.Count == 0)
-            throw new InvalidOperationException("Cannot start auction without lots");
+            int lotCount;
+            lock (_lotsLock)
+            {
+                lotCount = _lots.Count;
+            }
 
-        State = AuctionState.Active;
-        StartTime = DateTime.UtcNow;
-        SetUpdatedAt();
+            if (lotCount == 0)
+                throw new InvalidOperationException("Cannot start auction without lots");
+
+            State = AuctionState.Active;
+            StartTime = DateTime.UtcNow;
+            SetUpdatedAt();
+        }
     }
 
+    /// <summary>
+    /// Ends the auction, preventing further bids.
+    /// Thread-safe: Uses lock to ensure atomic state transition.
+    /// </summary>
     public void End()
     {
-        if (State != AuctionState.Active)
-            throw new InvalidOperationException($"Cannot end auction from {State} state");
+        lock (_stateLock)
+        {
+            if (State != AuctionState.Active)
+                throw new InvalidOperationException($"Cannot end auction from {State} state");
 
-        State = AuctionState.Ended;
-        EndTime = DateTime.UtcNow;
-        SetUpdatedAt();
+            State = AuctionState.Ended;
+            EndTime = DateTime.UtcNow;
+            SetUpdatedAt();
+        }
     }
 
+    /// <summary>
+    /// Checks if the auction can currently accept bids.
+    /// Thread-safe: State read is atomic for enum types.
+    /// </summary>
     public bool CanAcceptBids()
     {
+        // State is an enum (int), reads are atomic on x86/x64
+        // For absolute safety in all scenarios, we could lock, but this is acceptable
         return State == AuctionState.Active;
     }
 
+    /// <summary>
+    /// Retrieves a lot by its ID.
+    /// Thread-safe: Takes a snapshot under lock.
+    /// </summary>
     public Lot? GetLot(Guid lotId)
     {
-        return _lots.FirstOrDefault(l => l.Id == lotId);
+        lock (_lotsLock)
+        {
+            return _lots.FirstOrDefault(l => l.Id == lotId);
+        }
     }
 }
 

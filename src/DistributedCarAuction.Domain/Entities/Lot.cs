@@ -13,8 +13,21 @@ public class Lot : BaseEntity
     public decimal? ReservePrice { get; init; }
 
     private readonly List<Bid> _bids = new();
+    private readonly object _bidsLock = new();
 
-    public IReadOnlyList<Bid> Bids => _bids.AsReadOnly();
+    /// <summary>
+    /// Returns a snapshot of the current bids (thread-safe).
+    /// </summary>
+    public IReadOnlyList<Bid> Bids
+    {
+        get
+        {
+            lock (_bidsLock)
+            {
+                return _bids.ToList().AsReadOnly();
+            }
+        }
+    }
 
     private long _bidSequence = 0;
 
@@ -44,20 +57,28 @@ public class Lot : BaseEntity
     /// HIGH-AVAILABILITY BIDDING: Accepts all bids optimistically.
     /// Validation happens at query time (GetValidBids, GetWinningBid).
     /// This ensures maximum bid acceptance during network partitions.
+    /// Thread-safe: Uses Interlocked for sequence and lock for collection.
     /// </summary>
     public void PlaceBid(Guid bidderId, decimal amount)
     {
         if (amount <= 0)
             throw new ArgumentException("Bid amount must be greater than zero", nameof(amount));
 
-        Bid bid = new(bidderId, Id, amount, ++_bidSequence);
-        _bids.Add(bid);
+        long sequence = Interlocked.Increment(ref _bidSequence);
+        Bid bid = new(bidderId, Id, amount, sequence);
+        
+        lock (_bidsLock)
+        {
+            _bids.Add(bid);
+        }
+        
         SetUpdatedAt();
     }
 
     /// <summary>
     /// Returns all bids (including potentially invalid ones).
     /// Use GetValidBids() for filtered list.
+    /// Thread-safe: Delegates to GetValidBids which holds the lock.
     /// </summary>
     public decimal GetHighestBidAmount()
     {
@@ -71,13 +92,20 @@ public class Lot : BaseEntity
     /// <summary>
     /// CONSISTENCY AT QUERY TIME: Filters bids to only those that were valid
     /// (higher than the previous valid bid in sequence order).
+    /// Thread-safe: Takes a snapshot of bids under lock.
     /// </summary>
     public List<Bid> GetValidBids()
     {
+        List<Bid> bidsSnapshot;
+        lock (_bidsLock)
+        {
+            bidsSnapshot = _bids.ToList();
+        }
+
         List<Bid> validBids = new();
         decimal currentHighest = StartingBid;
 
-        foreach (Bid bid in _bids.OrderBy(b => b.Sequence))
+        foreach (Bid bid in bidsSnapshot.OrderBy(b => b.Sequence))
         {
             if (bid.Amount > currentHighest)
             {
@@ -91,6 +119,7 @@ public class Lot : BaseEntity
 
     /// <summary>
     /// Returns the highest valid bid (consistency enforced at read time).
+    /// Thread-safe: Delegates to GetValidBids which holds the lock.
     /// </summary>
     public Bid? GetHighestBid()
     {
@@ -105,6 +134,7 @@ public class Lot : BaseEntity
     /// <summary>
     /// CONSISTENT WINNER DETERMINATION: Only valid bids are considered.
     /// Reserve price check happens here.
+    /// Thread-safe: Delegates to GetHighestBid.
     /// </summary>
     public Guid? GetWinningBidderId()
     {
@@ -120,6 +150,7 @@ public class Lot : BaseEntity
     /// <summary>
     /// Check if a bid amount would be valid (for client feedback).
     /// Note: Bid is still accepted even if this returns false.
+    /// Thread-safe: Delegates to GetHighestBidAmount.
     /// </summary>
     public bool WouldBidBeValid(decimal amount)
     {
