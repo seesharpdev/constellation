@@ -14,6 +14,7 @@ public class LotService : ILotService
     private readonly IVehicleRepository _vehicleRepository;
     private readonly INotificationService _notificationService;
     private readonly IBroadcastService _broadcastService;
+    private readonly ISequenceGenerator _sequenceGenerator;
 
     /// <summary>
     /// Maximum number of retry attempts for concurrency conflicts.
@@ -48,13 +49,15 @@ public class LotService : ILotService
         IAuctionRepository auctionRepository,
         IVehicleRepository vehicleRepository,
         INotificationService notificationService,
-        IBroadcastService broadcastService)
+        IBroadcastService broadcastService,
+        ISequenceGenerator sequenceGenerator)
     {
         _lotRepository = lotRepository ?? throw new ArgumentNullException(nameof(lotRepository));
         _auctionRepository = auctionRepository ?? throw new ArgumentNullException(nameof(auctionRepository));
         _vehicleRepository = vehicleRepository ?? throw new ArgumentNullException(nameof(vehicleRepository));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _broadcastService = broadcastService ?? throw new ArgumentNullException(nameof(broadcastService));
+        _sequenceGenerator = sequenceGenerator ?? throw new ArgumentNullException(nameof(sequenceGenerator));
     }
 
     /// <summary>
@@ -157,8 +160,11 @@ public class LotService : ILotService
                         // HIGH-AVAILABILITY: Check if bid would be valid (for user feedback)
                         bool isCurrentlyValid = lot.WouldBidBeValid(request.Amount);
 
+                        // Generate sequence from distributed sequence generator
+                        long sequence = await _sequenceGenerator.GetNextSequenceAsync(request.LotId);
+
                         // Accept bid regardless of validity (availability over consistency)
-                        lot.PlaceBid(request.BidderId, request.Amount);
+                        lot.PlaceBid(request.BidderId, request.Amount, sequence);
                         await _lotRepository.UpdateAsync(lot);
 
                         // Get the placed bid (now accurate since we're under lock)

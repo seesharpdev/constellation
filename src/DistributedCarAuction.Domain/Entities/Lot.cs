@@ -29,7 +29,11 @@ public class Lot : BaseEntity
         }
     }
 
-    private long _bidSequence = 0;
+    /// <summary>
+    /// Local sequence counter for single-instance deployments.
+    /// For multi-instance deployments, use PlaceBid overload with external sequence.
+    /// </summary>
+    private long _localBidSequence = 0;
 
     private Lot() 
     { 
@@ -54,17 +58,34 @@ public class Lot : BaseEntity
     }
 
     /// <summary>
-    /// HIGH-AVAILABILITY BIDDING: Accepts all bids optimistically.
-    /// Validation happens at query time (GetValidBids, GetWinningBid).
-    /// This ensures maximum bid acceptance during network partitions.
-    /// Thread-safe: Uses Interlocked for sequence and lock for collection.
+    /// HIGH-AVAILABILITY BIDDING: Accepts all bids optimistically with LOCAL sequence.
+    /// Use this overload for single-instance deployments only.
+    /// For multi-instance deployments, use PlaceBid(bidderId, amount, sequence) with
+    /// a distributed sequence generator.
     /// </summary>
     public void PlaceBid(Guid bidderId, decimal amount)
+    {
+        long sequence = Interlocked.Increment(ref _localBidSequence);
+        PlaceBid(bidderId, amount, sequence);
+    }
+
+    /// <summary>
+    /// HIGH-AVAILABILITY BIDDING: Accepts all bids optimistically with EXTERNAL sequence.
+    /// Use this overload for multi-instance deployments with a distributed sequence generator.
+    /// Validation happens at query time (GetValidBids, GetWinningBid).
+    /// Thread-safe: Uses lock for collection access.
+    /// </summary>
+    /// <param name="bidderId">The ID of the bidder placing the bid.</param>
+    /// <param name="amount">The bid amount.</param>
+    /// <param name="sequence">Externally generated sequence number from ISequenceGenerator.</param>
+    public void PlaceBid(Guid bidderId, decimal amount, long sequence)
     {
         if (amount <= 0)
             throw new ArgumentException("Bid amount must be greater than zero", nameof(amount));
 
-        long sequence = Interlocked.Increment(ref _bidSequence);
+        if (sequence <= 0)
+            throw new ArgumentException("Sequence must be greater than zero", nameof(sequence));
+
         Bid bid = new(bidderId, Id, amount, sequence);
         
         lock (_bidsLock)
