@@ -2,7 +2,6 @@ namespace DistributedCarAuction.Application.Services;
 
 using DistributedCarAuction.Application.DTOs;
 using DistributedCarAuction.Application.Interfaces;
-using DistributedCarAuction.Application.Interfaces.Repositories;
 using DistributedCarAuction.Domain.Entities;
 using DistributedCarAuction.Domain.Enums;
 using DistributedCarAuction.Domain.Exceptions;
@@ -10,7 +9,7 @@ using System.Collections.Concurrent;
 
 public class AuctionService : IAuctionService
 {
-    private readonly IAuctionRepository _auctionRepository;
+    private readonly IUnitOfWorkFactory _unitOfWorkFactory;
     private readonly INotificationService _notificationService;
     private readonly IBroadcastService _broadcastService;
 
@@ -34,27 +33,31 @@ public class AuctionService : IAuctionService
         _auctionLocks.GetOrAdd(auctionId, _ => new SemaphoreSlim(1, 1));
 
     public AuctionService(
-        IAuctionRepository auctionRepository,
+        IUnitOfWorkFactory unitOfWorkFactory,
         INotificationService notificationService,
         IBroadcastService broadcastService)
     {
-        _auctionRepository = auctionRepository ?? throw new ArgumentNullException(nameof(auctionRepository));
+        _unitOfWorkFactory = unitOfWorkFactory ?? throw new ArgumentNullException(nameof(unitOfWorkFactory));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _broadcastService = broadcastService ?? throw new ArgumentNullException(nameof(broadcastService));
     }
 
     public async Task<Auction> CreateAuctionAsync(CreateAuctionRequest request)
     {
-		Auction auction = new(request.Title, request.Description);
-		Auction createdAuction = await _auctionRepository.AddAsync(auction);
+        await using IUnitOfWork uow = _unitOfWorkFactory.Create();
         
-        await _broadcastService.BroadcastAuctionAsync(createdAuction);
+        Auction auction = new(request.Title, request.Description);
+        await uow.Auctions.AddAsync(auction);
+        await uow.CommitAsync();
         
-        return createdAuction;
+        await _broadcastService.BroadcastAuctionAsync(auction);
+        
+        return auction;
     }
 
     /// <summary>
     /// Starts an auction, enabling bid acceptance.
+    /// Uses Unit of Work for transactional consistency.
     /// Thread-safe: Uses per-auction locking to prevent concurrent state transitions.
     /// Handles concurrency conflicts with automatic retry.
     /// </summary>
@@ -69,18 +72,23 @@ public class AuctionService : IAuctionService
         {
             for (int attempt = 0; attempt < MaxRetryAttempts; attempt++)
             {
+                await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+                
                 try
                 {
-                    auction = await _auctionRepository.GetByIdAsync(auctionId) 
+                    auction = await uow.Auctions.GetByIdAsync(auctionId) 
                         ?? throw new InvalidOperationException($"Auction with ID {auctionId} not found");
                     
                     auction.Start();
-                    await _auctionRepository.UpdateAsync(auction);
+                    await uow.Auctions.UpdateAsync(auction);
+                    await uow.CommitAsync();
+                    
                     newState = auction.State;
                     break; // Success
                 }
                 catch (ConcurrencyException) when (attempt < MaxRetryAttempts - 1)
                 {
+                    // UoW is disposed automatically, discarding uncommitted changes
                     await Task.Delay(RetryBaseDelay * (int)Math.Pow(2, attempt));
                 }
             }
@@ -100,6 +108,7 @@ public class AuctionService : IAuctionService
 
     /// <summary>
     /// Closes an auction, preventing further bids.
+    /// Uses Unit of Work for transactional consistency.
     /// Thread-safe: Uses per-auction locking to prevent concurrent state transitions.
     /// Handles concurrency conflicts with automatic retry.
     /// </summary>
@@ -114,18 +123,23 @@ public class AuctionService : IAuctionService
         {
             for (int attempt = 0; attempt < MaxRetryAttempts; attempt++)
             {
+                await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+                
                 try
                 {
-                    auction = await _auctionRepository.GetByIdAsync(auctionId) 
+                    auction = await uow.Auctions.GetByIdAsync(auctionId) 
                         ?? throw new InvalidOperationException($"Auction with ID {auctionId} not found");
                     
                     auction.End();
-                    await _auctionRepository.UpdateAsync(auction);
+                    await uow.Auctions.UpdateAsync(auction);
+                    await uow.CommitAsync();
+                    
                     newState = auction.State;
                     break; // Success
                 }
                 catch (ConcurrencyException) when (attempt < MaxRetryAttempts - 1)
                 {
+                    // UoW is disposed automatically, discarding uncommitted changes
                     await Task.Delay(RetryBaseDelay * (int)Math.Pow(2, attempt));
                 }
             }
@@ -145,11 +159,13 @@ public class AuctionService : IAuctionService
 
     public async Task<Auction?> GetByIdAsync(Guid auctionId)
     {
-        return await _auctionRepository.GetByIdAsync(auctionId);
+        await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+        return await uow.Auctions.GetByIdAsync(auctionId);
     }
 
     public async Task<List<Auction>> GetAllAsync()
     {
-        return await _auctionRepository.GetAllAsync();
+        await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+        return await uow.Auctions.GetAllAsync();
     }
 }

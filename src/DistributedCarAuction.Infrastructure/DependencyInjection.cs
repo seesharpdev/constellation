@@ -14,10 +14,19 @@ public static class DependencyInjection
     /// </summary>
     public static IServiceCollection AddInfrastructure(this IServiceCollection services)
     {
-        // Register repositories as singletons (in-memory storage)
-        services.AddSingleton<IVehicleRepository, InMemoryVehicleRepository>();
-        services.AddSingleton<IAuctionRepository, InMemoryAuctionRepository>();
-        services.AddSingleton<ILotRepository, InMemoryLotRepository>();
+        // Register concrete repository types as singletons (in-memory storage)
+        // These are needed by both direct injection and UnitOfWork
+        services.AddSingleton<InMemoryVehicleRepository>();
+        services.AddSingleton<InMemoryAuctionRepository>();
+        services.AddSingleton<InMemoryLotRepository>();
+
+        // Register interfaces pointing to the same singleton instances
+        services.AddSingleton<IVehicleRepository>(sp => sp.GetRequiredService<InMemoryVehicleRepository>());
+        services.AddSingleton<IAuctionRepository>(sp => sp.GetRequiredService<InMemoryAuctionRepository>());
+        services.AddSingleton<ILotRepository>(sp => sp.GetRequiredService<InMemoryLotRepository>());
+
+        // Register Unit of Work factory
+        services.AddSingleton<IUnitOfWorkFactory, InMemoryUnitOfWorkFactory>();
 
         // Register services
         services.AddSingleton<INotificationService, NotificationService>();
@@ -37,11 +46,19 @@ public static class DependencyInjection
     /// </summary>
     public static IServiceCollection AddInfrastructureWithRedis(this IServiceCollection services)
     {
-        // Register repositories as singletons (in-memory storage)
+        // Register concrete repository types as singletons (in-memory storage)
         // In production, these would be replaced with database-backed repositories
-        services.AddSingleton<IVehicleRepository, InMemoryVehicleRepository>();
-        services.AddSingleton<IAuctionRepository, InMemoryAuctionRepository>();
-        services.AddSingleton<ILotRepository, InMemoryLotRepository>();
+        services.AddSingleton<InMemoryVehicleRepository>();
+        services.AddSingleton<InMemoryAuctionRepository>();
+        services.AddSingleton<InMemoryLotRepository>();
+
+        // Register interfaces pointing to the same singleton instances
+        services.AddSingleton<IVehicleRepository>(sp => sp.GetRequiredService<InMemoryVehicleRepository>());
+        services.AddSingleton<IAuctionRepository>(sp => sp.GetRequiredService<InMemoryAuctionRepository>());
+        services.AddSingleton<ILotRepository>(sp => sp.GetRequiredService<InMemoryLotRepository>());
+
+        // Register Unit of Work factory
+        services.AddSingleton<IUnitOfWorkFactory, InMemoryUnitOfWorkFactory>();
 
         // Register services
         services.AddSingleton<INotificationService, NotificationService>();

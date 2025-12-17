@@ -1,5 +1,53 @@
 # Distributed Car Auction - Design Write-Up
 
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              API Layer                                       │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐  │
+│  │ AuctionsController│  │ LotsController  │  │ PartnerController           │  │
+│  │ [ApiKeyRequired]  │  │ [ApiKeyRequired]│  │ [AllowAnonymous] ⚠️         │  │
+│  └────────┬─────────┘  └────────┬────────┘  └─────────────┬───────────────┘  │
+└───────────┼─────────────────────┼─────────────────────────┼──────────────────┘
+            │                     │                         │
+            ▼                     ▼                         ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          Application Layer                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                        Service Classes                               │    │
+│  │  ┌─────────────────┐  ┌─────────────────┐                           │    │
+│  │  │ AuctionService  │  │ LotService      │                           │    │
+│  │  │                 │  │                 │                           │    │
+│  │  │ • UoW only      │  │ • UoW only      │                           │    │
+│  │  │ • Per-entity    │  │ • Per-entity    │                           │    │
+│  │  │   locking       │  │   locking       │                           │    │
+│  │  │ • Retry logic   │  │ • Retry logic   │                           │    │
+│  │  └────────┬────────┘  └────────┬────────┘                           │    │
+│  └───────────┼────────────────────┼────────────────────────────────────┘    │
+│              │                    │                                          │
+│              ▼                    ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                    Unit of Work Factory                              │    │
+│  │  • Creates transactional scope                                       │    │
+│  │  • Tracks pending changes                                            │    │
+│  │  • Atomic commit/rollback                                            │    │
+│  └────────────────────────────────┬────────────────────────────────────┘    │
+└───────────────────────────────────┼──────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Infrastructure Layer                                  │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────────┐   │
+│  │ InMemory         │  │ InMemory         │  │ InMemory                 │   │
+│  │ AuctionRepository│  │ LotRepository    │  │ SequenceGenerator        │   │
+│  │ • Version check  │  │ • Version check  │  │ • Per-lot counters       │   │
+│  └──────────────────┘  └──────────────────┘  └──────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## CAP Theorem Trade-offs
 
 This system uses a **nuanced CAP approach**—different operations have different requirements:
@@ -15,11 +63,15 @@ This system uses a **nuanced CAP approach**—different operations have differen
 Bids are accepted **optimistically** without rejecting based on current highest bid:
 
 ```csharp
-public void PlaceBid(Guid bidderId, decimal amount)
+public void PlaceBid(Guid bidderId, decimal amount, long sequence)
 {
     // Accept all bids for availability
-    Bid bid = new(bidderId, Id, amount, ++_bidSequence);
-    _bids.Add(bid);
+    Bid bid = new(bidderId, Id, amount, sequence);
+    lock (_bidsLock)
+    {
+        _bids.Add(bid);
+    }
+    SetUpdatedAt();
 }
 ```
 
@@ -32,10 +84,16 @@ Validity is enforced at **query time** when consistency matters:
 ```csharp
 public List<Bid> GetValidBids()
 {
+    List<Bid> bidsSnapshot;
+    lock (_bidsLock)
+    {
+        bidsSnapshot = _bids.ToList();
+    }
+
     List<Bid> validBids = new();
     decimal currentHighest = StartingBid;
     
-    foreach (Bid bid in _bids.OrderBy(b => b.Sequence))
+    foreach (Bid bid in bidsSnapshot.OrderBy(b => b.Sequence))
     {
         if (bid.Amount > currentHighest)
         {
@@ -49,37 +107,162 @@ public List<Bid> GetValidBids()
 
 ---
 
-## Bid Consistency and Ordering
+## Concurrency Control Architecture
 
-### The Challenge
-In a distributed system, multiple bids may arrive simultaneously. We must ensure:
-1. No bids are lost during network issues (availability)
-2. Winner determination is accurate and auditable (consistency)
+### Thread-Safety Layers
 
-### Solution: Optimistic Acceptance + Sequence-Based Resolution
+| Layer | Mechanism | Purpose |
+|-------|-----------|---------|
+| **Domain Entities** | `lock` objects, `Interlocked` | Protect internal collections and atomic operations |
+| **Service Layer** | `SemaphoreSlim` per entity | Serialize operations on same auction/lot |
+| **Repository Layer** | Version checking | Detect concurrent modifications |
+| **Transaction Layer** | Unit of Work | Atomic multi-repository commits |
 
-Each bid receives a monotonically increasing sequence number:
-
-```csharp
-Bid bid = new(bidderId, Id, amount, ++_bidSequence);
-```
-
-**Winner determination** filters to valid bids (each must exceed the previous):
+### Per-Entity Locking Pattern
 
 ```csharp
-// Valid bids: those higher than previous in sequence order
-foreach (Bid bid in _bids.OrderBy(b => b.Sequence))
+private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> _lotLocks = new();
+
+public async Task<BidResult> PlaceBidAsync(BidRequest request)
 {
-    if (bid.Amount > currentHighest) { validBids.Add(bid); }
+    SemaphoreSlim lotLock = _lotLocks.GetOrAdd(request.LotId, _ => new SemaphoreSlim(1, 1));
+    await lotLock.WaitAsync();
+    try
+    {
+        // All bid processing serialized per-lot
+        // Different lots processed concurrently
+    }
+    finally
+    {
+        lotLock.Release();
+    }
 }
-return validBids.LastOrDefault();  // Highest valid bid
 ```
 
-### Scaling Considerations
-For multi-instance deployments, the sequence would be generated by:
-- Database auto-increment column, or
-- Distributed sequence generator (e.g., Redis INCR), or
-- Timestamp + node ID combination
+### Optimistic Concurrency Control
+
+```csharp
+// BaseEntity
+public int Version { get; private set; } = 1;
+
+protected void SetUpdatedAt()
+{
+    UpdatedAt = DateTime.UtcNow;
+    Version++;
+}
+
+// Repository
+public Task UpdateAsync(Lot lot)
+{
+    if (lot.Version != storedVersion + 1)
+        throw new ConcurrencyException(nameof(Lot), lot.Id, storedVersion + 1, lot.Version);
+    
+    _lots[lot.Id] = lot;
+    _storedVersions[lot.Id] = lot.Version;
+}
+```
+
+### Retry with Exponential Backoff
+
+```csharp
+for (int attempt = 0; attempt < MaxRetryAttempts; attempt++)
+{
+    await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+    try
+    {
+        // ... operation ...
+        await uow.CommitAsync();
+        break;
+    }
+    catch (ConcurrencyException) when (attempt < MaxRetryAttempts - 1)
+    {
+        await Task.Delay(RetryBaseDelay * (int)Math.Pow(2, attempt));
+    }
+}
+```
+
+---
+
+## Unit of Work Pattern
+
+### Interface
+
+```csharp
+public interface IUnitOfWork : IAsyncDisposable, IDisposable
+{
+    IAuctionRepository Auctions { get; }
+    ILotRepository Lots { get; }
+    IVehicleRepository Vehicles { get; }
+    
+    Task<int> CommitAsync();
+    void Rollback();
+    bool HasPendingChanges { get; }
+}
+```
+
+### Usage in Services
+
+```csharp
+public async Task<Lot> CreateLotAsync(CreateLotRequest request)
+{
+    await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+    
+    Vehicle? vehicle = await uow.Vehicles.GetByIdAsync(request.VehicleId);
+    Auction? auction = await uow.Auctions.GetByIdAsync(request.AuctionId);
+    
+    Lot lot = new(request.AuctionId, vehicle, request.StartingBid);
+    auction.AddLot(lot);
+    
+    await uow.Auctions.UpdateAsync(auction);
+    await uow.Lots.AddAsync(lot);
+    
+    await uow.CommitAsync();  // Atomic - both succeed or both fail
+    
+    return lot;
+}
+```
+
+---
+
+## Distributed Sequence Generation
+
+### Interface
+
+```csharp
+public interface ISequenceGenerator
+{
+    Task<long> GetNextSequenceAsync(Guid lotId);
+    long GetNextSequence(Guid lotId);
+}
+```
+
+### Single-Instance (In-Memory)
+
+```csharp
+public class InMemorySequenceGenerator : ISequenceGenerator
+{
+    private readonly ConcurrentDictionary<Guid, long> _sequences = new();
+
+    public long GetNextSequence(Guid lotId)
+    {
+        return _sequences.AddOrUpdate(lotId, 1, (_, v) => v + 1);
+    }
+}
+```
+
+### Multi-Instance (Redis) - Stub
+
+```csharp
+public class RedisSequenceGenerator : ISequenceGenerator
+{
+    public async Task<long> GetNextSequenceAsync(Guid lotId)
+    {
+        var db = _redis.GetDatabase();
+        var key = $"bid:seq:{lotId}";
+        return await db.StringIncrementAsync(key);  // Atomic INCR
+    }
+}
+```
 
 ---
 
@@ -152,34 +335,6 @@ public record BidPlacedPayload(
 );
 ```
 
-### Implementation
-
-```csharp
-public class KafkaBroadcastService : IBroadcastService
-{
-    private readonly IProducer<string, string> _producer;
-    private const string TopicName = "auction-events";
-
-    public async Task BroadcastBidAsync(Guid auctionId, Guid lotId, decimal amount)
-    {
-        AuctionEvent evt = new()
-        {
-            EventId = Guid.NewGuid(),
-            EventType = "BidPlaced",
-            AuctionId = auctionId,
-            Timestamp = DateTime.UtcNow,
-            Payload = new BidPlacedPayload(lotId, bidderId, amount, sequence, isHighest)
-        };
-
-        await _producer.ProduceAsync(TopicName, new Message<string, string>
-        {
-            Key = auctionId.ToString(),  // Partition key ensures ordering
-            Value = JsonSerializer.Serialize(evt)
-        });
-    }
-}
-```
-
 ### Partner Integration Options
 
 | Option | Use Case | Implementation |
@@ -201,5 +356,18 @@ public class KafkaBroadcastService : IBroadcastService
 
 ---
 
-*This Kafka-based design ensures reliable, ordered event delivery while supporting diverse partner integration patterns.*
+## Known Security Considerations
 
+| Issue | Severity | Status |
+|-------|----------|--------|
+| Partner API is `[AllowAnonymous]` | 🔴 Critical | Open |
+| BidderId from request body (impersonation risk) | 🔴 Critical | Open |
+| No API key = allow all (dev mode) | 🟠 Medium | Open |
+| String comparison for API key (timing attack) | 🟡 Low | Open |
+| Static lock dictionaries grow unbounded | 🟡 Low | Open |
+
+See `TODO.md` for full security remediation plan.
+
+---
+
+*This design prioritizes availability for bid acceptance while ensuring consistency for winner determination, with comprehensive concurrency controls for multi-instance deployments.*

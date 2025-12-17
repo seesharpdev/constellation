@@ -2,16 +2,13 @@ namespace DistributedCarAuction.Application.Services;
 
 using DistributedCarAuction.Application.DTOs;
 using DistributedCarAuction.Application.Interfaces;
-using DistributedCarAuction.Application.Interfaces.Repositories;
 using DistributedCarAuction.Domain.Entities;
 using DistributedCarAuction.Domain.Exceptions;
 using System.Collections.Concurrent;
 
 public class LotService : ILotService
 {
-    private readonly ILotRepository _lotRepository;
-    private readonly IAuctionRepository _auctionRepository;
-    private readonly IVehicleRepository _vehicleRepository;
+    private readonly IUnitOfWorkFactory _unitOfWorkFactory;
     private readonly INotificationService _notificationService;
     private readonly IBroadcastService _broadcastService;
     private readonly ISequenceGenerator _sequenceGenerator;
@@ -45,16 +42,12 @@ public class LotService : ILotService
         _auctionLocks.GetOrAdd(auctionId, _ => new SemaphoreSlim(1, 1));
 
     public LotService(
-        ILotRepository lotRepository,
-        IAuctionRepository auctionRepository,
-        IVehicleRepository vehicleRepository,
+        IUnitOfWorkFactory unitOfWorkFactory,
         INotificationService notificationService,
         IBroadcastService broadcastService,
         ISequenceGenerator sequenceGenerator)
     {
-        _lotRepository = lotRepository ?? throw new ArgumentNullException(nameof(lotRepository));
-        _auctionRepository = auctionRepository ?? throw new ArgumentNullException(nameof(auctionRepository));
-        _vehicleRepository = vehicleRepository ?? throw new ArgumentNullException(nameof(vehicleRepository));
+        _unitOfWorkFactory = unitOfWorkFactory ?? throw new ArgumentNullException(nameof(unitOfWorkFactory));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _broadcastService = broadcastService ?? throw new ArgumentNullException(nameof(broadcastService));
         _sequenceGenerator = sequenceGenerator ?? throw new ArgumentNullException(nameof(sequenceGenerator));
@@ -62,15 +55,13 @@ public class LotService : ILotService
 
     /// <summary>
     /// Creates a new lot and adds it to an auction.
+    /// Uses Unit of Work for transactional consistency: both auction update and lot creation
+    /// are committed atomically.
     /// Thread-safe: Uses per-auction locking to prevent concurrent lot additions from conflicting.
     /// Handles concurrency conflicts with automatic retry.
     /// </summary>
     public async Task<Lot> CreateLotAsync(CreateLotRequest request)
     {
-        // Validate vehicle exists (can be done outside lock)
-        Vehicle? vehicle = await _vehicleRepository.GetByIdAsync(request.VehicleId) 
-            ?? throw new InvalidOperationException($"Vehicle with ID {request.VehicleId} not found");
-
         SemaphoreSlim auctionLock = GetAuctionLock(request.AuctionId);
         await auctionLock.WaitAsync();
         try
@@ -78,24 +69,36 @@ public class LotService : ILotService
             // Retry loop for concurrency conflicts
             for (int attempt = 0; attempt < MaxRetryAttempts; attempt++)
             {
+                // Create a new Unit of Work for each attempt (fresh transaction)
+                await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+                
                 try
                 {
+                    // Validate vehicle exists
+                    Vehicle? vehicle = await uow.Vehicles.GetByIdAsync(request.VehicleId) 
+                        ?? throw new InvalidOperationException($"Vehicle with ID {request.VehicleId} not found");
+
                     // Validate auction exists and get fresh copy under lock
-                    Auction? auction = await _auctionRepository.GetByIdAsync(request.AuctionId) 
+                    Auction? auction = await uow.Auctions.GetByIdAsync(request.AuctionId) 
                         ?? throw new InvalidOperationException($"Auction with ID {request.AuctionId} not found");
 
                     Lot lot = new(request.AuctionId, vehicle, request.StartingBid, request.ReservePrice);
                     
-                    // Add lot to auction (atomic within lock)
+                    // Add lot to auction
                     auction.AddLot(lot);
-                    await _auctionRepository.UpdateAsync(auction);
+                    await uow.Auctions.UpdateAsync(auction);
 
-                    Lot createdLot = await _lotRepository.AddAsync(lot);
+                    // Add lot to repository
+                    await uow.Lots.AddAsync(lot);
                     
-                    return createdLot;
+                    // Commit both changes atomically
+                    await uow.CommitAsync();
+                    
+                    return lot;
                 }
                 catch (ConcurrencyException) when (attempt < MaxRetryAttempts - 1)
                 {
+                    // UoW is disposed automatically, discarding uncommitted changes
                     // Exponential backoff before retry
                     await Task.Delay(RetryBaseDelay * (int)Math.Pow(2, attempt));
                 }
@@ -112,6 +115,7 @@ public class LotService : ILotService
 
     /// <summary>
     /// Places a bid on a lot.
+    /// Uses Unit of Work for transactional consistency.
     /// Thread-safe: Uses per-lot locking to serialize bids on the same lot.
     /// Concurrent bids on different lots proceed in parallel.
     /// Handles concurrency conflicts with automatic retry.
@@ -120,22 +124,24 @@ public class LotService : ILotService
     {
         try
         {
-            // Quick validation outside lock (lot existence)
-            Lot? lot = await _lotRepository.GetByIdAsync(request.LotId);
-            if (lot == null)
-                return new BidResult(false, $"Lot with ID {request.LotId} not found");
+            // Quick validation outside lock using a lightweight UoW
+            await using (IUnitOfWork validationUow = _unitOfWorkFactory.Create())
+            {
+                Lot? lot = await validationUow.Lots.GetByIdAsync(request.LotId);
+                if (lot == null)
+                    return new BidResult(false, $"Lot with ID {request.LotId} not found");
 
-            // Verify auction is active (can check outside lock - state transitions are atomic)
-            Auction? auction = await _auctionRepository.GetByIdAsync(lot.AuctionId);
-            if (auction == null)
-                return new BidResult(false, "Associated auction not found");
+                Auction? auction = await validationUow.Auctions.GetByIdAsync(lot.AuctionId);
+                if (auction == null)
+                    return new BidResult(false, "Associated auction not found");
 
-            if (!auction.CanAcceptBids())
-                return new BidResult(false, $"Auction is not active (current state: {auction.State})");
+                if (!auction.CanAcceptBids())
+                    return new BidResult(false, $"Auction is not active (current state: {auction.State})");
+            }
 
             // Variables to capture result for notification after lock release
             BidResult? result = null;
-            Guid auctionId = auction.Id;
+            Guid auctionId = default;
 
             // Acquire per-lot lock for bid placement
             SemaphoreSlim lotLock = GetLotLock(request.LotId);
@@ -145,17 +151,22 @@ public class LotService : ILotService
                 // Retry loop for concurrency conflicts
                 for (int attempt = 0; attempt < MaxRetryAttempts; attempt++)
                 {
+                    // Create a new Unit of Work for each attempt (fresh transaction)
+                    await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+                    
                     try
                     {
                         // Re-fetch lot under lock to get latest state
-                        lot = await _lotRepository.GetByIdAsync(request.LotId);
+                        Lot? lot = await uow.Lots.GetByIdAsync(request.LotId);
                         if (lot == null)
                             return new BidResult(false, $"Lot with ID {request.LotId} not found");
 
                         // Re-check auction state under lock (could have ended)
-                        auction = await _auctionRepository.GetByIdAsync(lot.AuctionId);
+                        Auction? auction = await uow.Auctions.GetByIdAsync(lot.AuctionId);
                         if (auction == null || !auction.CanAcceptBids())
                             return new BidResult(false, $"Auction is not active (current state: {auction?.State})");
+
+                        auctionId = auction.Id;
 
                         // HIGH-AVAILABILITY: Check if bid would be valid (for user feedback)
                         bool isCurrentlyValid = lot.WouldBidBeValid(request.Amount);
@@ -165,7 +176,10 @@ public class LotService : ILotService
 
                         // Accept bid regardless of validity (availability over consistency)
                         lot.PlaceBid(request.BidderId, request.Amount, sequence);
-                        await _lotRepository.UpdateAsync(lot);
+                        await uow.Lots.UpdateAsync(lot);
+
+                        // Commit the transaction
+                        await uow.CommitAsync();
 
                         // Get the placed bid (now accurate since we're under lock)
                         Bid? placedBid = lot.Bids.LastOrDefault();
@@ -188,6 +202,7 @@ public class LotService : ILotService
                     }
                     catch (ConcurrencyException) when (attempt < MaxRetryAttempts - 1)
                     {
+                        // UoW is disposed automatically, discarding uncommitted changes
                         // Exponential backoff before retry
                         await Task.Delay(RetryBaseDelay * (int)Math.Pow(2, attempt));
                     }
@@ -223,18 +238,23 @@ public class LotService : ILotService
 
     public async Task<decimal> GetHighestBidAsync(Guid lotId)
     {
-        Lot? lot = await _lotRepository.GetByIdAsync(lotId) ?? throw new InvalidOperationException($"Lot with ID {lotId} not found");
-		return lot.GetHighestBidAmount();
+        await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+        Lot? lot = await uow.Lots.GetByIdAsync(lotId) 
+            ?? throw new InvalidOperationException($"Lot with ID {lotId} not found");
+        return lot.GetHighestBidAmount();
     }
 
     public async Task<Guid?> GetWinnerAsync(Guid lotId)
     {
-        Lot? lot = await _lotRepository.GetByIdAsync(lotId) ?? throw new InvalidOperationException($"Lot with ID {lotId} not found");
-		return lot.GetWinningBidderId();
+        await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+        Lot? lot = await uow.Lots.GetByIdAsync(lotId) 
+            ?? throw new InvalidOperationException($"Lot with ID {lotId} not found");
+        return lot.GetWinningBidderId();
     }
 
     public async Task<Lot?> GetByIdAsync(Guid lotId)
     {
-        return await _lotRepository.GetByIdAsync(lotId);
+        await using IUnitOfWork uow = _unitOfWorkFactory.Create();
+        return await uow.Lots.GetByIdAsync(lotId);
     }
 }
